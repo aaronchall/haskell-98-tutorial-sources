@@ -8,6 +8,4 @@ mkdir html
 cp *.gif html
 cp *.html html
 cp -r code html
-# runhugs tex.hs
-ghc ./tex.hs
-./tex
+runhaskell tex.hs
