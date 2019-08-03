@@ -78,11 +78,12 @@ commands are supported but not all.
 
 module Main where
 
-import Monad(foldM)
-import IO hiding (bracket)
-import Char(isSpace, isAlpha, isDigit)
+import Control.Monad(foldM)
+import System.IO
+import Control.Exception  hiding (bracket)
+import Data.Char(isSpace, isAlpha, isDigit)
 
-import IOExts(unsafePerformIO)  -- debugging only
+-- import IOExts(unsafePerformIO)  -- debugging only
 
 data FontStyle = RM | IT | TT | Bold | Sym | UL
     deriving (Eq,Show)
@@ -215,8 +216,8 @@ writeRefFile s =
      "" -> return ()
      f  -> do putStr ("Writing reference file " ++ f ++ "\n")
               catch (writeFile f (concat (map fmtKV (newRefMap s))))
-                    (\e -> do putStr ("Can't write ref file: " ++ f ++ "\n")
-                              return ())
+                    ((\e -> do putStr ("Can't write ref file: " ++ f ++ "\n")
+                               return ()) :: IOException -> IO ())
   where fmtKV (k,v) = k ++ "=" ++ v ++ "\n" 
 
 
@@ -232,8 +233,8 @@ writeIndexFile s =
                   idx = htmlToString 
                           (HProtect [HCmd cmd, HList "item" (HProtect hdrs)])
               catch (writeFile f idx)
-                    (\e -> do putStr ("Can't write index file: " ++ f ++ "\n")
-                              return ())
+                    ((\e -> do putStr ("Can't write index file: " ++ f ++ "\n")
+                               return ()) :: IOException -> IO ())
 
 
 -- parseConfig parses a configuration file to yield an initial state
@@ -254,7 +255,7 @@ parseConfig :: String -> IO IState
 parseConfig f = catch 
                   (do c <- readFile f 
                       foldM configLine initState (lines c))
-                  (\e -> error ("Can't read configuration file " ++ f))
+                  ((\e -> error ("Can't read configuration file " ++ f)) :: IOException -> IO IState)
 
 configLine s l | "#" `starts` l = return s
                | l == ""        = return s
@@ -282,21 +283,21 @@ configLine s l | "#" `starts` l = return s
 readRefFile :: String -> IO [(String, String)]
 readRefFile f = catch (do l <- readFile f
                           return (map parseKV (lines l)))
-                      (\e -> do putStr ("Can't read ref file: " ++ f ++ "\n")
-                                return [])
+                      ((\e -> do putStr ("Can't read ref file: " ++ f ++ "\n")
+                                 return []) :: IOException -> IO [(String, String)])
 
 readAuxFile :: String -> IO [(String,String)]
 readAuxFile f = catch (do l <- readFile f
                           return (processAuxLines (lines l)))
-                      (\e -> do putStr ("Can't read aux file: " ++ f ++ "\n")
-                                return [])
+                      ((\e -> do putStr ("Can't read aux file: " ++ f ++ "\n")
+                                 return []) :: IOException -> IO [(String, String)])
 
 readAnchorFile :: String -> IO [String]
 readAnchorFile f = catch (do l <- readFile f
                              return (lines l))
-                         (\e -> do putStr ("Can't read anchor file: "
-                                            ++ f ++ "\n") 
-                                   return [])
+                         ((\e -> do putStr ("Can't read anchor file: "
+                                             ++ f ++ "\n") 
+                                    return []) :: IOException -> IO [String])
 
 -- Look for \newlabel{label}{value} in aux files.  Ignore all else.
 
@@ -400,12 +401,12 @@ processFile s f = let (file,ext) = parseFileName f
                           putStr ("Writing " ++ outFile ++ "\n")
                           catch (do writeFile outFile (htmlToString html)
                                     return s'')
-                                (\e -> do putStr ("Write to " ++ outFile ++
-                                                  " failed.\n")
-                                          return s'))
-                      (\e -> do putStr ("File " ++ outFile ++
-                                        " error " ++ (show e) ++ "\n")
-                                return s')
+                                ((\e -> do putStr ("Write to " ++ outFile ++
+                                                   " failed.\n")
+                                           return s') :: IOException -> IO IState))
+                      ((\e -> do putStr ("File " ++ outFile ++
+                                         " error " ++ (show e) ++ "\n")
+                                 return s') :: IOException -> IO IState)
 
 parseFileName f = let (re,rf) = span (/= '.') (reverse f) in
   case (re,rf) of
@@ -1129,8 +1130,8 @@ doBlock a d hs =
                             HPara]
     _ -> HString ("Unknown begin: \\begin{" ++ a ++ "}\n")
  where (opts,d') = case (break (== ';') d) of
-    (str,"") -> ("", str)
-    (o,';':s) -> (o,s)
+        (str,"") -> ("", str)
+        (o,';':s) -> (o,s)
 
 doEnd s l ls = let (a,l',ls') = getSArg l ls in
    if a == "thebibliography"
@@ -1242,16 +1243,16 @@ doInput s l ls = let (f,l',ls') = getSArg l ls in
                                                         then ".verb"
                                                         else ".tex"))
                                return (lines l1)) 
-                         (\err -> do putStr ("Input error: " ++ show err)
-                                     return [])
+                         ((\err -> do putStr ("Input error: " ++ show err)
+                                      return []) :: IOException -> IO [String])
          doChar s "" (newLines ++ [l'] ++ ls')
 
 doInputHS s l ls = let (f,l',ls') = getSArg l ls in
       do putStr ("Reading Haskell input " ++ f ++ ".hs\n")
          newLines <- catch (do l1 <- readFile (f ++ ".hs")
                                return (lines l1)) 
-                         (\err -> do putStr ("Input error: " ++ show err)
-                                     return [])
+                         ((\err -> do putStr ("Input error: " ++ show err)
+                                      return []) :: IOException -> IO [String])
          s' <- emitCodeLines s newLines
          doChar s' l' ls'
 
