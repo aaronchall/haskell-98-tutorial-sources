@@ -83,15 +83,16 @@ import System.IO
 import Control.Exception  hiding (bracket)
 import Data.Char(isSpace, isAlpha, isDigit)
 
--- import IOExts(unsafePerformIO)  -- debugging only
+import Debug.Trace
 
-data FontStyle = RM | IT | TT | Bold | Sym | UL
+data FontStyle = RM | IT | TT | Span | Bold | Sym | UL
     deriving (Eq,Show)
 
 data Font = Font FontStyle Int String   -- Has a size and color
     deriving (Eq, Show)
 
 ttFont = Font TT 3 ""
+spanFont = Font Span 3 ""
 mathFont = Font IT 3 ""
 romanFont = Font RM 3 ""
 
@@ -111,12 +112,14 @@ data HTML = HProtect [HTML] -- Boundary for local font changes
           | HCmd String     -- a raw html command
           | HEol            -- a soft end of line
           | HVerb String    -- A string of chars in Verb mode
+          | HCode String    -- A string of chars in Verb mode (for code)
           | HVerbLine String -- as above with a newline 
           | HAnchor String HTML -- Hyperlinked text
           | HDef String     -- hyperlink label definition
           | HSub HTML       -- Subscript 
           | HSuper HTML     -- Superscript
           | HQuote HTML     -- Quoted text
+          | HPre HTML       -- Preformatted text
           | HCenter HTML    -- Centered text
           | HFont FontStyle -- Font selection.
           | HColor String   -- Color selection.
@@ -149,6 +152,10 @@ dropWhite h = h
 delimiter :: String -> PCFun
 delimiter d s l ls = do -- putStr ("Closing: " ++ d ++ "\n") 
                         (head (delims s)) d s l ls
+
+delimiterPre :: PCFun
+delimiterPre s = head (delims s') "pre" s'
+    where s' = setPre s False
 
 catchd :: (String -> [HTML] -> PCFun) -> State -> String -> [String] ->
           PCFun -> PC
@@ -351,7 +358,8 @@ data IState = IState { sourceFiles :: [String],
                        refMap :: [(String,String)],
                        newRefMap :: [(String,String)],
                        style :: [String],
-                       macdefs :: [(String,String)]}
+                       macdefs :: [(String,String)],
+                       inPre :: Bool}
   deriving Show
 
 initState = IState { sourceFiles = [], auxInfo = [], panchors = [],
@@ -361,7 +369,7 @@ initState = IState { sourceFiles = [], auxInfo = [], panchors = [],
                      verbMode = False, section = [], 
                      avoidSectionBump = False, inQuotes = False,
                      inMath = False, refFile = "", refMap = [], newRefMap = [],
-                     style = ["article"], macdefs=[]}
+                     style = ["article"], macdefs=[], inPre = False}
 
 -- This is the `changable' part of the state.  Save updates by pushing
 -- global stuff into the `gs' field. 
@@ -713,12 +721,18 @@ popMath s = doChar (setMath s False)
 
 setMath s b = s {gs = (gs s) {inMath = b}} 
 
+setPre s b = s {gs = (gs s) {inPre = b}} 
+
+getPre = inPre . gs
+
 doTexCommand s l ls = 
      let (cmd,args) = parseTexCommand l
+         preMode = inPre . gs $ s
          doISO = emit (HISO (drop 3 cmd)) s args ls
          badCmd = do putStr ("Tex command " ++ cmd ++ " not recognized\n")
                      doChar s args ls
  in
+      if preMode && cmd == "tt" then ignore 1 s (trim args) ls else
       if "ISO" `starts` cmd then doISO else
        case lookup cmd texCommands of
         Just hndlr -> hndlr s (trim args) ls
@@ -737,12 +751,14 @@ parseTexCommand cs | isAlpha (head cs) =
 
 
 doVerb s "" [] = error "End of file in verb mode"
-doVerb s "" (l:ls) = doVerb (HVerb "\n" +++ s) l ls
-doVerb s ('@':'@':l) ls = doVerb (HVerb "@" +++ s) l ls
+doVerb s "" (l:ls) = doVerb (verbType s "\n" +++ s) l ls
+doVerb s ('@':'@':l) ls = doVerb (verbType s "@" +++ s) l ls
 doVerb s ('@':l) ls = return (s, l, ls)   -- Exit verb mode
-doVerb s l ls = doVerb (HVerb l' +++ s) l'' ls
+doVerb s l ls = doVerb (verbType s l' +++ s) l'' ls
   where
     (l',l'') = span (/= '@') l
+
+verbType s = if getPre s then HCode else HVerb
 
 --- Indexing stuff
 
@@ -857,7 +873,7 @@ texCommands = [("\\",doEol),
                ("bibitem",doBibItem),
                ("Large",emit (HSize 4)),
                ("bf",emit (HFont Bold)),
-               ("tt",emit (HFont TT)),
+               ("tt",emit (HFont Span)),
 	       ("vspace",ignore 1),
 	       ("em",emit (HFont IT)),
 	       ("cite",doCite),
@@ -890,9 +906,9 @@ texCommands = [("\\",doEol),
                ("%",use "%"),
                ("frac", doFrac),
                ("ignorehtml",ignore 1),
-	       ("bprog",emit (HVerb "\n")),
+	       ("eprog",delimiterPre),
 	       ("bprogNoSkip",ignore 0),
-	       ("eprog", emit (HVerb "\n")),
+	       ("bprog", doBeginPre),
 	       ("eprogNoSkip",ignore 0),
                ("footnote",bracket " (" ")"),
                ("bkqA",use "`"),
@@ -995,9 +1011,9 @@ texCommands = [("\\",doEol),
                ("helprefn",getArg2 (\h1 h2 -> emit h1)),
                ("parag",embed (HHdr 3 "")),
                ("showURL",getArg2 (\h1 h2 -> 
-                           emit (HProtect [HProtect [HFont TT,h1],h2]))),
+                           emit (HProtect [HProtect [HFont Span,h1],h2]))),
                ("mailto",getArg (\h -> 
-                          emit (HProtect [HFont TT,h]))),
+                          emit (HProtect [HFont Span,h]))),
 -- For Haskore
                ("extended",ignore 0),
                ("basic", ignore 1),
@@ -1080,6 +1096,9 @@ doBegin s l ls = let (a,l',ls') = getSArg l ls in
 doBeginItemize s l ls = 
     catchd (reqDelim "itemize" (doBlock "itemize" "") doChar) s l ls doChar 
 
+doBeginPre s l ls =
+    catchd (reqDelim "pre" (doBlock "pre" "") doChar) (setPre s True) l ls doChar 
+
 doBeginArray s l ls = 
   let (d,l',ls') = getSArg l ls in
     catchd (reqDelim "array" (doBlock "array" d) doChar) s l' ls' doChar 
@@ -1104,6 +1123,7 @@ doBlock a d hs =
   case a of
     "itemize" -> HList "item" h
     "quote" -> HQuote h
+    "pre" -> HPre h
     "flushright" -> HTable "" "r" [] h
     "center" -> HCenter h
     "enumerate" -> HList "enum" h
@@ -1332,6 +1352,7 @@ ht1 h s cf nf@(Font style sz color) nl =
    HCmd str -> huse str
    HEol -> huse "\n"
    HVerb str -> hemitTT str False
+   HCode str -> hemitCode str False
    HVerbLine str -> hemitTT (str ++ "\n") True
    HAnchor str h -> remit ("<a href=\"" ++ str ++ "\">") "</a>" h False
    HDef str -> huse ("<a name=\"" ++ str ++ "\"></a>")  
@@ -1339,6 +1360,7 @@ ht1 h s cf nf@(Font style sz color) nl =
    HSuper h -> remit "<sub>" "</sub>" h False
    HCenter h -> remit "<div align=center>" "</div>" h True
    HQuote h -> remit "<blockquote>" "</blockquote>" h True
+   HPre h -> remit "<pre>" "</pre>" h True
    HFont f -> newFont (Font f sz color)
    HColor color' -> newFont (Font style sz color')
    HSize i -> newFont (Font style i color)
@@ -1385,10 +1407,14 @@ ht1 h s cf nf@(Font style sz color) nl =
      emitl (h:hs) s cf nf nl = let (s1,cf1,nf1,nl1) = ht1 h sn cf nf nl
                                    (sn,cfn,nfn,nln) = emitl hs s cf1 nf1 nl1 in
                                 (s1,cfn,nfn,nln)
+     hemitCode str forceNL = (changeFont cf nf ++
+                             (if forceNL && (not nl) then "\n" else "") ++
+                             htmlEncodeVerbCode str s,
+                             nf, nf, forceNL)
      hemitTT str forceNL = (changeFont cf ttFont ++ 
-                            (if forceNL && (not nl) then "<br>\n" else "") ++
-                            htmlEncodeVerb str s,
-                            ttFont, nf, forceNL)
+                           (if forceNL && (not nl) then "<br>\n" else "") ++
+                           htmlEncodeVerb str s,
+                           ttFont, nf, forceNL)
      newFont f = (s,cf,f,nl)
      doTableRow align widths rows = "<tr>" ++
                              tr1 align ws rows ++
@@ -1423,6 +1449,11 @@ htmlEncode ('>':cs) s = "&gt;" ++ htmlEncode cs s
 htmlEncode ('<':cs) s = "&lt;" ++ htmlEncode cs s
 htmlEncode ('&':cs) s = "&amp;" ++ htmlEncode cs s
 htmlEncode (c  :cs) s = c : htmlEncode cs s
+
+htmlEncodeVerbCode [] s = s
+htmlEncodeVerbCode (' ' :cs) s = " " ++ htmlEncodeVerbCode cs s
+htmlEncodeVerbCode ('\n':cs) s = "\n" ++ htmlEncodeVerbCode cs s
+htmlEncodeVerbCode (c:cs) s = htmlEncodeVerb [c] "" ++ htmlEncodeVerbCode cs s
 
 htmlEncodeVerb [] s = s
 htmlEncodeVerb ('>' :cs) s = "&gt;" ++ htmlEncodeVerb cs s
@@ -1470,7 +1501,8 @@ enterFont (Font s sz color) = "<font " ++ fs sz ++ fc color ++ ">"
 enterFontStyle RM = ""
 enterFontStyle IT = "<I>"
 enterFontStyle Bold = "<B>"
-enterFontStyle TT = "<tt>"
+enterFontStyle TT = "<code>"
+enterFontStyle Span = "<span>"
 enterFontStyle Sym = "<font face=\"symbol\">"
 enterFontStyle UL = "<u>"
 
@@ -1479,7 +1511,8 @@ exitFont (Font s _ _) = exitFontStyle s ++ "</font>"
 exitFontStyle RM = ""
 exitFontStyle IT = "</I>"
 exitFontStyle Bold = "</B>"
-exitFontStyle TT = "</tt>"
+exitFontStyle TT = "</code>"
+exitFontStyle Span = "</span>"
 exitFontStyle Sym = "</font>"
 exitFontStyle UL = "</u>"
 
