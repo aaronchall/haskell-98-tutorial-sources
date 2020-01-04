@@ -4,8 +4,27 @@ echo "Generating html for tutorial in ./html"
 echo "Run this twice to get references right"
 echo "Report must be in ../report for hyperlinks to work"
 rm -fr html
+rm -rf markdown
 mkdir html
+mkdir -p markdown/code
 cp *.gif html
 cp *.html html
 cp -r code html
-runhugs tex.hs
+runhaskell tex.hs
+
+function doubleconvert {
+    filename=$(basename -- "$1")
+    name="${filename%.*}"
+    dirname=$(dirname "$1")
+    innerdir=${dirname#./html}
+    extension="${filename##*.}"
+    md="./markdown$innerdir/$name.md"
+    pandoc "$1" -o "$md"
+    sed -i '' -Ee 's/(\([^\(:]*\.)html/\1md/g' "$md"
+    pandoc "$md" -o "$1"
+    sed -i '' -Ee 's/("[^":]*).md/\1.html/g' "$1"
+}
+
+find ./html -type f -name "*.html" | while read file; do 
+    doubleconvert $file
+done
